@@ -1,22 +1,32 @@
 import React, { useState, useEffect, useRef } from "react";
-import { ModelId, CreativeMode, SavedPrompt, MODEL_PRESETS, ChatModelId, INSTANT_TIPS, LearnedExample } from "./types";
+import { SavedPrompt, LearnedExample } from "./types";
 import { DEFAULT_LEARNED_EXAMPLES } from "./data/defaultExamples";
 import { MachineLearningModal } from "./components/MachineLearningModal";
 import Sidebar from "./components/Sidebar";
+import { generateVisual, getDailyAdvice, optimizePrompt, type PromptVariation } from "./services/api";
+import { loadLearnedExamples, loadPromptHistory, saveLearnedExamples, savePromptHistory } from "./lib/storage";
+import { MAX_REFERENCE_IMAGES, prepareImageFile } from "./lib/images";
+import { markExamplesUsed, rankLearnedExamples, reinforceLearnedExample } from "../shared/learning";
+import {
+  CHAT_MODELS,
+  CHAT_MODEL_IDS,
+  DEFAULT_CHAT_MODEL,
+  DEFAULT_IMAGE_MODEL,
+  IMAGE_MODELS,
+  IMAGE_MODEL_IDS,
+  getChatModelApiId,
+  isModelId,
+  type ChatModelId,
+  type ModelId,
+} from "../shared/models";
 import { 
   Sparkles, 
   Copy, 
-  RotateCcw, 
   Image as ImageIcon, 
   Compass, 
-  Lock, 
-  Send, 
   RefreshCw, 
-  Check, 
   Sliders, 
-  Flame, 
   Zap, 
-  HelpCircle, 
   Download, 
   ExternalLink,
   ChevronDown,
@@ -42,32 +52,15 @@ interface DailyAdvice {
 
 export default function App() {
   // State Initialization from LocalStorage safely
-  const [history, setHistory] = useState<SavedPrompt[]>(() => {
-    try {
-      const saved = localStorage.getItem("gipm_history");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.error("Failed to parse history from localStorage. Clearing the key to heal the browser state.", e);
-      try {
-        localStorage.removeItem("gipm_history");
-      } catch (err) {}
-    }
-    return [];
-  });
+  const [history, setHistory] = useState<SavedPrompt[]>(loadPromptHistory);
   
   const [activePromptId, setActivePromptId] = useState<string | null>(null);
   
   // Workspace Parameters
   const [currentOriginal, setCurrentOriginal] = useState("");
   const [currentOptimized, setCurrentOptimized] = useState("");
-  const [currentModel, setCurrentModel] = useState<ModelId>("Nano Banana 2");
-  const [currentChatModel, setCurrentChatModel] = useState<ChatModelId>("Gemini 3.7 Flash");
-  const [currentMode, setCurrentMode] = useState<CreativeMode>("Optimized");
+  const [currentModel, setCurrentModel] = useState<ModelId>(DEFAULT_IMAGE_MODEL);
+  const [currentChatModel, setCurrentChatModel] = useState<ChatModelId>(DEFAULT_CHAT_MODEL);
   const [currentAspectRatio, setCurrentAspectRatio] = useState("16:9");
   const [currentCreativity, setCurrentCreativity] = useState(0.7);
   
@@ -80,27 +73,18 @@ export default function App() {
   const [referencedImages, setReferencedImages] = useState<ReferenceImageObj[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rawInputRef = useRef<HTMLTextAreaElement>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   // UI Controls
   const [isLoading, setIsLoading] = useState(false);
   const [imageLoading, setImageLoading] = useState(false);
   const [generatedImageUrl, setGeneratedImageUrl] = useState<string | null>(null);
-  const [showModelPicker, setShowModelPicker] = useState(false);
   const [showChatModelPicker, setShowChatModelPicker] = useState(false);
-  const [showAspectPicker, setShowAspectPicker] = useState(false);
   const [copyToast, setCopyToast] = useState<string | null>(null);
-  const [activeTipIndex, setActiveTipIndex] = useState(0);
-  const [mockDetails, setMockDetails] = useState<any>(null);
   const [isTempChat, setIsTempChat] = useState(false);
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
   // Multi-Prompt variations states
-  interface PromptVariation {
-    prompt: string;
-    style: string;
-    lighting: string;
-    explanation: string;
-  }
   const [isMultiPromptActive, setIsMultiPromptActive] = useState(false);
   const [variationType, setVariationType] = useState<'similar' | 'different'>('different');
   const [currentVariations, setCurrentVariations] = useState<PromptVariation[]>([]);
@@ -108,23 +92,10 @@ export default function App() {
   const [expandedHeights, setExpandedHeights] = useState<number[]>([]);
 
   // Machine Learning Few-Shot System state
-  const [learnedExamples, setLearnedExamples] = useState<LearnedExample[]>(() => {
-    try {
-      const saved = localStorage.getItem("gemini_ml_examples");
-      if (saved !== null) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.error("Failed to parse ML examples from localStorage", e);
-    }
-    return DEFAULT_LEARNED_EXAMPLES;
-  });
+  const [learnedExamples, setLearnedExamples] = useState<LearnedExample[]>(loadLearnedExamples);
 
   const [showMLModal, setShowMLModal] = useState(false);
-  const [mlPrefillData, setMlPrefillData] = useState<{ request?: string; winningPrompt?: string; title?: string } | null>(null);
+  const [mlPrefillData, setMlPrefillData] = useState<{ request?: string; winningPrompt?: string; title?: string; images?: string[] } | null>(null);
   const [isCompanionBoardOpen, setIsCompanionBoardOpen] = useState(false);
   
   // Prompt Manual Editing & Like State
@@ -138,21 +109,16 @@ export default function App() {
     setIsEditingPrompt(false);
   }, [currentOptimized]);
 
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
+
   useEffect(() => {
-    try {
-      localStorage.setItem("gemini_ml_examples", JSON.stringify(learnedExamples));
-    } catch (err) {
-      console.warn("Failed to persist ML examples", err);
-    }
+    saveLearnedExamples(learnedExamples);
   }, [learnedExamples]);
 
   const handleAddLearnedExample = (example: Omit<LearnedExample, 'id' | 'createdAt'>) => {
-    const newEx: LearnedExample = {
-      ...example,
-      id: `ml-ex-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-      createdAt: new Date().toISOString()
-    };
-    setLearnedExamples(prev => [newEx, ...prev]);
+    setLearnedExamples((previous) => reinforceLearnedExample(previous, example).examples);
   };
 
   const handleDeleteLearnedExample = (id: string) => {
@@ -244,107 +210,22 @@ export default function App() {
   const [dailyAdvice, setDailyAdvice] = useState<DailyAdvice | null>(null);
   const [adviceLoading, setAdviceLoading] = useState(false);
 
-  // Quota & Rate limits Status States
-  const [timeLeft, setTimeLeft] = useState({ hours: 0, minutes: 0, seconds: 0 });
-  const [requestCount, setRequestCount] = useState<number>(() => {
-    const todayStr = new Date().toISOString().split('T')[0]; // Reset exactly at UTC Midnight (3:00 AM Egypt)
-    const storedDate = localStorage.getItem("gipm_usage_date");
-    const storedCount = localStorage.getItem("gipm_usage_count");
-    if (storedDate === todayStr && storedCount) {
-      return parseInt(storedCount, 10);
-    }
-    return 0;
-  });
-
-  const incrementUsage = () => {
-    const todayStr = new Date().toISOString().split('T')[0]; // Reset exactly at UTC Midnight (3:00 AM Egypt)
-    const currentStoredCount = parseInt(localStorage.getItem("gipm_usage_count") || "0", 10);
-    const nextCount = currentStoredCount + 1;
-    setRequestCount(nextCount);
-    localStorage.setItem("gipm_usage_count", nextCount.toString());
-    localStorage.setItem("gipm_usage_date", todayStr);
-  };
-  
-  useEffect(() => {
-    const updateCountdown = () => {
-      const now = new Date();
-      
-      // Free tier resets at next midnight UTC (24:00 UTC)
-      const nextMidnightUTC = Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate() + 1, // Next day
-        0, 0, 0, 0
-      );
-      
-      const diff = nextMidnightUTC - now.getTime();
-      
-      if (diff > 0) {
-        const hours = Math.floor(diff / (1000 * 60 * 60));
-        const minutes = Math.floor((diff / (1000 * 60)) % 60);
-        const seconds = Math.floor((diff / 1000) % 60);
-        setTimeLeft({ hours, minutes, seconds });
-      } else {
-        setTimeLeft({ hours: 0, minutes: 0, seconds: 0 });
-      }
-    };
-    
-    updateCountdown();
-    const interval = setInterval(updateCountdown, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
   // Daily Advice fetch guided by Egypt timezone
   useEffect(() => {
     const fetchFreshAdvice = async () => {
-      let egyptDate = "";
-      try {
-        egyptDate = new Date().toLocaleDateString("en-US", { timeZone: "Africa/Cairo" });
-      } catch (timezoneErr) {
-        egyptDate = new Date().toLocaleDateString("en-US"); // Safe fallback if browser lacks localized tables
-      }
-      
-      const cachedDate = localStorage.getItem("gipm_advice_date_cairo");
-      const cachedAdvice = localStorage.getItem("gipm_advice_content");
-
-      if (cachedDate === egyptDate && cachedAdvice) {
-        try {
-          const parsed = JSON.parse(cachedAdvice);
-          setDailyAdvice(parsed);
-          return; // Uses cached advise, prevents multiple queries on same day!
-        } catch (e) {
-          console.warn("Cached daily advice corrupted, resetting to heal...", e);
-          try {
-            localStorage.removeItem("gipm_advice_content");
-          } catch (err) {}
-        }
-      }
-
       setAdviceLoading(true);
       try {
-        const res = await fetch("/api/daily-gemini-advice");
-        if (res.ok) {
-          const data = await res.json();
-          setDailyAdvice(data);
-          localStorage.setItem("gipm_advice_date_cairo", egyptDate);
-          localStorage.setItem("gipm_advice_content", JSON.stringify(data));
-        } else {
-          throw new Error("API responded with an error");
-        }
-      } catch (err) {
-        console.error("Failed to fetch daily advisor insights from Google developer logs:", err);
-        // Fallback tip localized for Egypt time
+        setDailyAdvice(await getDailyAdvice<DailyAdvice>());
+      } catch {
         const fallback: DailyAdvice = {
-          date: egyptDate,
-          tip: "نصيحة اليوم: يدعم موديل Nano Banana ميزة الفهم الدقيق للتكوين والإضاءة ثلاثية الأبعاد بامتياز، مع الحفاظ على التناسق اللوني ونقاء المشهد.",
-          ideaTitle: "لقطة سينمائية لغروب دافئ في الأهرامات الكلاسيكية",
-          ideaDescription: "محاكاة خيالية مذهلة لتمثال أبو الهول وتحته غبار صحراوي ذهبي يطير تحت أشعة دافئة.",
-          suggestedEnglishPrompt: "Cinematic shot of ancient Sphinx at sunset, glowing amber lights, realistic golden desert dust particle effects, 8k resolution, shot on 35mm lens",
-          suggestedModel: "Nano Banana Pro"
+          date: new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" }),
+          tip: "استخدم Nano Banana 2 لمعظم المهام، وPro فقط للتخطيطات المعقدة والكتابة الدقيقة داخل الصورة.",
+          ideaTitle: "لقطة منتج بإضاءة محايدة نظيفة",
+          ideaDescription: "تكوين تجاري بسيط يحافظ على اللون الحقيقي للمنتج وملمسه.",
+          suggestedEnglishPrompt: "A clean commercial product hero shot with neutral white-balanced studio lighting, accurate material texture, controlled reflections, and a distraction-free background.",
+          suggestedModel: "Nano Banana 2"
         };
         setDailyAdvice(fallback);
-        localStorage.setItem("gipm_advice_date_cairo", egyptDate);
-        localStorage.setItem("gipm_advice_content", JSON.stringify(fallback));
       } finally {
         setAdviceLoading(false);
       }
@@ -353,52 +234,13 @@ export default function App() {
     fetchFreshAdvice();
   }, []);
 
-  const chatModelMap: Record<ChatModelId, string> = {
-    'Gemini 3.7 Flash': 'gemini-3.7-flash',
-    'Gemini 3.6 Flash': 'gemini-3.6-flash',
-    'Gemini 3.5 Flash': 'gemini-3.5-flash',
-    'Gemini 3.1 Flash Lite': 'gemini-3.1-flash-lite',
-    'Gemini 3.1 Pro Preview': 'gemini-3.1-pro-preview',
-    'Gemini 2.5 Pro': 'gemini-2.5-pro',
-    'Gemini 2.5 Flash': 'gemini-2.5-flash',
-    'Gemini 2.5 Flash-Lite': 'gemini-2.5-flash-lite'
-  };
-
-  // Auto-save active sessions to localStorage on changes safely, optimizing storage size
   useEffect(() => {
-    try {
-      // Create a copy of history with trimmed older base64 images to prevent localStorage quota overflows (max 4.5MB limit)
-      const optimizedHistory = history.map((item, idx) => {
-        // Keep actual base64 reference only for the first 3 active items, strip from older to keep JSON light
-        if (idx > 2 && (item.referenceImage || (item.referenceImages && item.referenceImages.length > 0))) {
-          return {
-            ...item,
-            referenceImage: undefined,
-            referenceImages: []
-          };
-        }
-        return item;
-      });
-      localStorage.setItem("gipm_history", JSON.stringify(optimizedHistory));
-    } catch (err) {
-      console.warn("localStorage quota hit, saving minimal prompt history representation...", err);
-      // Fallback: strip ALL images if we still fail
-      try {
-        const minimalHistory = history.map(item => ({
-          ...item,
-          referenceImage: undefined,
-          referenceImages: []
-        }));
-        localStorage.setItem("gipm_history", JSON.stringify(minimalHistory));
-      } catch (innerErr) {
-        console.error("Even minimal history save failed:", innerErr);
-      }
-    }
+    savePromptHistory(history);
   }, [history]);
 
   // Adjust optimal configurations on model changes
   useEffect(() => {
-    const preset = MODEL_PRESETS[currentModel];
+    const preset = IMAGE_MODELS[currentModel];
     if (preset) {
       setCurrentAspectRatio(preset.bestAspectRatio);
       setCurrentCreativity(preset.bestCreativity);
@@ -415,8 +257,9 @@ export default function App() {
 
   // Copy toast controller helper
   const triggerToast = (msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setCopyToast(msg);
-    setTimeout(() => {
+    toastTimerRef.current = setTimeout(() => {
       setCopyToast(null);
     }, 2500);
   };
@@ -430,8 +273,7 @@ export default function App() {
     setCurrentVariations([]);
     setIsMultiPromptActive(false);
     setGeneratedImageUrl(null);
-    setMockDetails(null);
-    const preset = MODEL_PRESETS[currentModel];
+    const preset = IMAGE_MODELS[currentModel];
     setCurrentAspectRatio(preset.bestAspectRatio);
     setCurrentCreativity(preset.bestCreativity);
     triggerToast("بدء مسودة برومبت فارغة جديدة");
@@ -459,7 +301,6 @@ export default function App() {
       if (item.chatModel) {
         setCurrentChatModel(item.chatModel);
       }
-      setCurrentMode(item.mode);
       setCurrentAspectRatio(item.aspect_ratio);
       setCurrentCreativity(item.creativity);
       if (item.referenceImages && item.referenceImages.length > 0) {
@@ -488,69 +329,20 @@ export default function App() {
     }
   };
 
-  // Compress and resize image client-side to prevent network bottlenecks and Gemini API timeouts
-  const compressAndResizeImage = (file: File): Promise<{ base64: string; mimeType: string }> => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-          const MAX_WIDTH = 1024;
-          const MAX_HEIGHT = 1024;
-          let width = img.width;
-          let height = img.height;
-
-          if (width > MAX_WIDTH || height > MAX_HEIGHT) {
-            if (width > height) {
-              height = Math.round((height * MAX_WIDTH) / width);
-              width = MAX_WIDTH;
-            } else {
-              width = Math.round((width * MAX_HEIGHT) / height);
-              height = MAX_HEIGHT;
-            }
-          }
-
-          const canvas = document.createElement("canvas");
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext("2d");
-          if (ctx) {
-            ctx.drawImage(img, 0, 0, width, height);
-            const compressedDataUrl = canvas.toDataURL("image/jpeg", 0.85);
-            resolve({ base64: compressedDataUrl, mimeType: "image/jpeg" });
-            return;
-          }
-          resolve({ base64: e.target?.result as string, mimeType: file.type });
-        };
-        img.onerror = () => {
-          resolve({ base64: e.target?.result as string, mimeType: file.type });
-        };
-        img.src = e.target?.result as string;
-      };
-      reader.onerror = () => {
-        resolve({ base64: "", mimeType: file.type });
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
-  // Convert File object to Base64 String - Support multiple files addition
   const processImageFile = async (file: File) => {
-    if (!file.type.startsWith("image/")) {
-      triggerToast("خطأ: يرجى رفع ملف صورة فقط.");
+    if (referencedImages.length >= MAX_REFERENCE_IMAGES) {
+      triggerToast(`الحد الأقصى ${MAX_REFERENCE_IMAGES} صور مرجعية.`);
       return;
     }
     try {
-      const { base64, mimeType } = await compressAndResizeImage(file);
-      if (!base64) return;
+      const { base64, mimeType } = await prepareImageFile(file);
       const imgId = Math.random().toString(36).substring(7);
-      setReferencedImages(prev => [
-        ...prev,
-        { base64, mimeType, id: imgId }
-      ]);
+      setReferencedImages((previous) => previous.length >= MAX_REFERENCE_IMAGES
+        ? previous
+        : [...previous, { base64, mimeType, id: imgId }]);
       triggerToast("تم إضافة الصورة المرجعية بنجاح!");
-    } catch (err) {
-      console.error("Failed to process image file", err);
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : "تعذر تجهيز الصورة.");
     }
   };
 
@@ -615,43 +407,27 @@ export default function App() {
     }
 
     setIsLoading(true);
-    setMockDetails(null);
-
-    // Let prompt instructions adjust if expanding/shortening
-    let requestedPrompt = currentOriginal;
-    if (modifierAction === 'shorten') {
-      requestedPrompt = `Shorten and make this prompt extremely dense and precise for generation: ${currentOriginal}`;
-    } else if (modifierAction === 'expand') {
-      requestedPrompt = `Expand this prompt with rich scene assets, high contrast volumetric illumination details, and complex depth configurations: ${currentOriginal}`;
-    }
 
     try {
-      const res = await fetch("/api/optimize-prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: requestedPrompt,
-          mode: currentMode,
-          model: currentModel,
-          images: referencedImages.map(img => ({ base64: img.base64, mimeType: img.mimeType })),
-          imageBase64: referencedImages[0]?.base64 || null,
-          imageMimeType: referencedImages[0]?.mimeType || null,
-          aspect_ratio: currentAspectRatio,
-          creativity: currentCreativity,
-          chatModel: chatModelMap[currentChatModel],
-          modifierAction: modifierAction,
-          multiPrompt: isMultiPromptActive,
-          variationType: variationType,
-          learnedExamples: learnedExamples.filter(ex => ex.isActive)
-        })
+      const learningCandidates = rankLearnedExamples(currentOriginal, learnedExamples, {
+        maxExamples: 8,
+        maxCharacters: 30_000,
       });
-
-      if (!res.ok) {
-        const errObj = await res.json();
-        throw new Error(errObj.error || "Failed prompt optimization");
-      }
-
-      const data = await res.json();
+      const data = await optimizePrompt({
+        prompt: currentOriginal,
+        model: currentModel,
+        images: referencedImages.map(img => ({ base64: img.base64, mimeType: img.mimeType })),
+        aspectRatio: currentAspectRatio,
+        creativity: currentCreativity,
+        chatModel: getChatModelApiId(currentChatModel),
+        modifierAction,
+        multiPrompt: isMultiPromptActive,
+        variationType,
+        learnedExamples: learningCandidates.map(({ example }) => {
+          const { images: _images, ...textExample } = example;
+          return textExample;
+        }),
+      });
       setCurrentOptimized(data.optimizedPrompt);
       
       if (data.variations && data.variations.length > 0) {
@@ -660,8 +436,10 @@ export default function App() {
         setCurrentVariations([]);
       }
 
-      incrementUsage();
-      
+      if (data.learning?.selectedIds.length) {
+        setLearnedExamples((previous) => markExamplesUsed(previous, data.learning?.selectedIds ?? []));
+      }
+
       // Update or create active item session
       const updatedPrompt: SavedPrompt = {
         id: activePromptId || Math.random().toString(36).substring(7),
@@ -669,7 +447,7 @@ export default function App() {
         optimized: data.optimizedPrompt,
         model: currentModel,
         chatModel: currentChatModel,
-        mode: currentMode as any,
+        mode: 'Optimized',
         aspect_ratio: currentAspectRatio,
         creativity: currentCreativity,
         referenceImage: referencedImages[0]?.base64 || undefined,
@@ -693,9 +471,8 @@ export default function App() {
         }
         triggerToast("تم تحليل الصورة وتحسين البرومبت برعاية جيميناي بنجاح!");
       }
-    } catch (err: any) {
-      console.error(err);
-      triggerToast(`عطل: ${err.message}`);
+    } catch (error) {
+      triggerToast(`عطل: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`);
     } finally {
       setIsLoading(false);
     }
@@ -709,26 +486,23 @@ export default function App() {
 
     setExpandingIndices(prev => [...prev, index]);
     try {
-      const res = await fetch("/api/optimize-prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: targetVariant.prompt,
-          mode: currentMode,
-          model: currentModel,
-          aspect_ratio: currentAspectRatio,
-          creativity: currentCreativity,
-          chatModel: chatModelMap[currentChatModel],
-          modifierAction: 'expand',
-          multiPrompt: false
-        })
+      const learningCandidates = rankLearnedExamples(targetVariant.prompt, learnedExamples, {
+        maxExamples: 6,
+        maxCharacters: 24_000,
       });
-
-      if (!res.ok) {
-        throw new Error("حدث خطأ في الاتصال بالخادم.");
-      }
-
-      const data = await res.json();
+      const data = await optimizePrompt({
+        prompt: targetVariant.prompt,
+        model: currentModel,
+        aspectRatio: currentAspectRatio,
+        creativity: currentCreativity,
+        chatModel: getChatModelApiId(currentChatModel),
+        modifierAction: 'expand',
+        multiPrompt: false,
+        learnedExamples: learningCandidates.map(({ example }) => {
+          const { images: _images, ...textExample } = example;
+          return textExample;
+        }),
+      });
       if (data.optimizedPrompt) {
         setCurrentVariations(prev => {
           const updated = [...prev];
@@ -744,9 +518,8 @@ export default function App() {
           triggerToast(`تم تطويل وتوسيع الخيار ${index + 1} بنجاح!`);
         }
       }
-    } catch (err: any) {
-      console.error(err);
-      triggerToast(`فشل توسيع الخيار ${index + 1}: ${err.message}`);
+    } catch (error) {
+      triggerToast(`فشل توسيع الخيار ${index + 1}: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`);
     } finally {
       setExpandingIndices(prev => prev.filter(item => item !== index));
     }
@@ -773,31 +546,16 @@ export default function App() {
     }
 
     setImageLoading(true);
-    setMockDetails(null);
 
     try {
-      const res = await fetch("/api/generate-visual", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: testPrompt,
-          model: currentModel,
-          aspect_ratio: currentAspectRatio,
-          imageSize: "1K"
-        })
+      const data = await generateVisual({
+        prompt: testPrompt,
+        model: currentModel,
+        aspectRatio: currentAspectRatio,
+        imageSize: "1K",
       });
-
-      if (!res.ok) {
-        throw new Error("خطأ في الاتصال بالرسام الافتراضي.");
-      }
-
-      const data = await res.json();
       if (data.success) {
         setGeneratedImageUrl(data.imageUrl);
-        incrementUsage();
-        if (data.mockData) {
-          setMockDetails(data.mockData);
-        }
 
         // Save generated visual URL to existing active state
         if (activePromptId) {
@@ -810,17 +568,11 @@ export default function App() {
         }
         triggerToast("تم إنشاء الصورة الإلهامية للبرومبت بنجاح!");
       }
-    } catch (err: any) {
-      console.error(err);
-      triggerToast("فشل توليد التكوين البصري: " + err.message);
+    } catch (error) {
+      triggerToast("فشل توليد التكوين البصري: " + (error instanceof Error ? error.message : 'خطأ غير معروف'));
     } finally {
       setImageLoading(false);
     }
-  };
-
-  // Tick tips forward
-  const handleNextTip = () => {
-    setActiveTipIndex(prev => prev + 1);
   };
 
   // Clear all loaded reference images helper
@@ -834,15 +586,7 @@ export default function App() {
     triggerToast("تم إزالة الصورة المرجعية.");
   };
 
-  // Preset aspect ratio lists based on Nano Banana 2 specifications
-  const getAspectRatios = () => {
-    if (currentModel === 'Nano Banana 2' || currentModel === 'Gemini 3.1 Flash') {
-      return ["1:1", "3:4", "4:3", "16:9", "9:16", "21:9", "4:1", "8:1"];
-    }
-    return ["1:1", "3:4", "4:3", "16:9", "9:16"];
-  };
-
-  const activePromptData = activePromptId ? history.find(p => p.id === activePromptId) || null : null;
+  const getAspectRatios = () => [...IMAGE_MODELS[currentModel].aspectRatios];
 
   return (
     <div dir="rtl" className="h-screen w-full bg-[#050505] text-[#e5e7eb] font-sans flex overflow-hidden relative selection:bg-yellow-400 selection:text-black">
@@ -879,8 +623,6 @@ export default function App() {
               <button 
                 onClick={() => {
                   setShowChatModelPicker(!showChatModelPicker);
-                  setShowModelPicker(false);
-                  setShowAspectPicker(false);
                 }}
                 className="flex items-center gap-2 px-3 py-1.5 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 rounded-xl text-xs text-indigo-300 font-semibold transition-all cursor-pointer"
               >
@@ -892,16 +634,7 @@ export default function App() {
               {showChatModelPicker && (
                 <div className="absolute top-12 right-0 w-60 bg-[#0d0d0d] border border-white/10 rounded-2xl p-2 shadow-2xl z-50 animate-in fade-in-50 duration-200">
                   <div className="text-[10px] text-gray-400 font-bold px-3 py-1.5 uppercase tracking-wide border-b border-white/5">اختر نموذج جيميناي للشات وتحسين البرومبت</div>
-                  {([
-                    'Gemini 3.7 Flash',
-                    'Gemini 3.6 Flash',
-                    'Gemini 3.5 Flash',
-                    'Gemini 3.1 Flash Lite',
-                    'Gemini 3.1 Pro Preview',
-                    'Gemini 2.5 Pro',
-                    'Gemini 2.5 Flash',
-                    'Gemini 2.5 Flash-Lite'
-                  ] as ChatModelId[]).map((key) => {
+                  {CHAT_MODEL_IDS.map((key) => {
                     return (
                       <button
                         key={key}
@@ -913,6 +646,7 @@ export default function App() {
                         className={`w-full text-right px-3 py-2 rounded-xl text-xs flex flex-col gap-0.5 hover:bg-white/5 transition-colors cursor-pointer ${currentChatModel === key ? 'bg-indigo-400/10 text-indigo-300' : 'text-gray-300'}`}
                       >
                         <span className="font-bold">{key}</span>
+                        <span className="text-[9px] text-gray-500 leading-relaxed">{CHAT_MODELS[key].description}</span>
                       </button>
                     );
                   })}
@@ -922,15 +656,54 @@ export default function App() {
 
             <div className="h-8 w-[1px] bg-white/10 hidden sm:block"></div>
 
+            <label className="flex flex-col gap-1 text-[9px] text-gray-500 font-bold">
+              موديل توليد الصور
+              <select
+                value={currentModel}
+                onChange={(event) => {
+                  if (isModelId(event.target.value)) setCurrentModel(event.target.value);
+                }}
+                className="bg-[#111] border border-yellow-400/20 text-yellow-300 rounded-xl px-3 py-1.5 text-xs outline-none cursor-pointer"
+              >
+                {IMAGE_MODEL_IDS.map((model) => <option key={model} value={model}>{model}</option>)}
+              </select>
+            </label>
+
+            <label className="flex flex-col gap-1 text-[9px] text-gray-500 font-bold">
+              نسبة الأبعاد
+              <select
+                value={currentAspectRatio}
+                onChange={(event) => setCurrentAspectRatio(event.target.value)}
+                className="bg-[#111] border border-white/10 text-gray-200 rounded-xl px-3 py-1.5 text-xs outline-none cursor-pointer"
+              >
+                {getAspectRatios().map((ratio) => <option key={ratio} value={ratio}>{ratio}</option>)}
+              </select>
+            </label>
+
+            <label className="flex flex-col gap-1 min-w-32 text-[9px] text-gray-500 font-bold">
+              الإبداع: {currentCreativity.toFixed(2)}
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={currentCreativity}
+                onChange={(event) => setCurrentCreativity(Number(event.target.value))}
+                className="accent-yellow-400 cursor-pointer"
+              />
+            </label>
+
+            <div className="h-8 w-[1px] bg-white/10 hidden sm:block"></div>
+
             {/* Machine Learning Few-Shot Learning Hub button */}
             <div>
-              <span className="text-[9px] text-purple-400/80 font-bold uppercase tracking-wider block mb-0.5">نظام التعلم الآلي والتدريب بالأمثلة</span>
+              <span className="text-[9px] text-purple-400/80 font-bold uppercase tracking-wider block mb-0.5">ذاكرة تعلم تكيفية بالأمثلة</span>
               <button 
                 onClick={() => setShowMLModal(true)}
                 className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 rounded-xl text-xs text-purple-300 font-bold transition-all cursor-pointer shadow-sm hover:shadow-purple-500/10"
               >
                 <Brain className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
-                <span>نظام التعلم الآلي ({learnedExamples.filter(e => e.isActive).length} أمثلة مفعلة)</span>
+                <span>ذاكرة التعلم ({learnedExamples.filter(e => e.isActive).length} أمثلة مفعلة)</span>
               </button>
             </div>
 
@@ -944,7 +717,7 @@ export default function App() {
             )}
             <span className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-full font-bold flex items-center gap-1 font-mono">
               <Clock className="w-3.5 h-3.5 text-amber-400 animate-spin" style={{ animationDuration: "10s" }} />
-              <span>استهلاكك اليوم: {requestCount}/20 • تجديد الحصة خلال: {timeLeft.hours.toString().padStart(2, '0')}س {timeLeft.minutes.toString().padStart(2, '0')}د</span>
+              <span>حدود الاستخدام الفعلية تُدار من مشروع Gemini API</span>
             </span>
           </div>
         </header>
@@ -1150,7 +923,7 @@ export default function App() {
                     {learnedExamples.filter(e => e.isActive).length > 0 && (
                       <span className="text-[10px] text-purple-300 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full font-semibold flex items-center gap-1">
                         <Brain className="w-3 h-3 text-purple-400" />
-                        <span>معالج بنظام التعلم الآلي ({learnedExamples.filter(e => e.isActive).length} أمثلة)</span>
+                        <span>اختيار ذكي من {learnedExamples.filter(e => e.isActive).length} أمثلة</span>
                       </span>
                     )}
 
@@ -1275,6 +1048,15 @@ export default function App() {
                     {currentOptimized && (
                       <>
                         <button
+                          onClick={() => handleGenerateVisuals()}
+                          disabled={imageLoading}
+                          className="px-3 py-1.5 bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 text-indigo-200 text-xs font-bold rounded-full transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          <ImageIcon className="w-3.5 h-3.5" />
+                          <span>{imageLoading ? 'جاري توليد الصورة...' : 'ولّد صورة تجريبية'}</span>
+                        </button>
+
+                        <button
                           onClick={() => handleOpenMLWithPrompt()}
                           title="إضافة هذا البرومبت المعتمد إلى أمثلة نظام التعلم الآلي"
                           className="px-3 py-1.5 bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 text-purple-300 text-xs font-bold rounded-full transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
@@ -1316,6 +1098,18 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+
+                {imageLoading && (
+                  <div className="mt-4 rounded-xl border border-indigo-500/20 bg-black/30 p-8">
+                    <SplashLoadingAnimation />
+                  </div>
+                )}
+
+                {!imageLoading && generatedImageUrl && (
+                  <div className="mt-4 overflow-hidden rounded-xl border border-white/10 bg-black/30 p-2">
+                    <img src={generatedImageUrl} alt="الصورة المولدة من البرومبت" className="max-h-[520px] w-full rounded-lg object-contain" />
+                  </div>
+                )}
 
               </div>
             )}
@@ -1417,9 +1211,8 @@ export default function App() {
                         <button
                           onClick={() => {
                             setCurrentOriginal(dailyAdvice.ideaDescription);
-                            const correctModel: ModelId = dailyAdvice.suggestedModel as any;
-                            if (MODEL_PRESETS[correctModel]) {
-                               setCurrentModel(correctModel);
+                            if (isModelId(dailyAdvice.suggestedModel)) {
+                               setCurrentModel(dailyAdvice.suggestedModel);
                             }
                             setCurrentOptimized(dailyAdvice.suggestedEnglishPrompt);
                             triggerToast("تم تفعيل الفكرة والموديل! جاهز للرسم والتحسين.");
@@ -1464,77 +1257,25 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Section 3: Quota & 429 Rate Limits Info */}
+                  {/* Section 3: Accurate API status guidance */}
                   <div className="bg-gradient-to-br from-indigo-500/[0.02] to-emerald-500/[0.02] border border-white/10 p-5 rounded-xl flex flex-col justify-between space-y-4 text-right shadow-xl">
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
                         <span className="text-[9px] px-2.5 py-0.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full font-bold flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-                          مراقبة حية للحصة
+                          حماية فعالة
                         </span>
                         <div className="flex items-center gap-2 justify-end">
-                          <span className="text-xs font-bold text-[#e5e7eb]">حالة باقة الاستخدام المجانية</span>
+                          <span className="text-xs font-bold text-[#e5e7eb]">حالة اتصال Gemini</span>
                           <Activity className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
                         </div>
                       </div>
-
-                      {/* Progress Bar */}
-                      <div className="bg-white/[0.02] border border-white/5 p-3 rounded-xl space-y-2">
-                        <div className="flex justify-between items-center text-xs">
-                          <span className="text-emerald-400 font-bold">{requestCount} / 20</span>
-                          <span className="text-gray-300 font-medium">الاستهلاك اليومي الحالي:</span>
-                        </div>
-                        
-                        <div className="w-full bg-white/5 h-2 rounded-full overflow-hidden">
-                          <div 
-                            className={`h-full duration-500 transition-all ${
-                              requestCount >= 17 ? 'bg-red-500' : requestCount >= 10 ? 'bg-yellow-500' : 'bg-emerald-500'
-                            }`}
-                            style={{ width: `${Math.min(100, (requestCount / 20) * 100)}%` }}
-                          />
-                        </div>
-
-                        <div className="flex justify-between items-center text-[11px] pt-1 text-gray-400">
-                          <span className="text-yellow-400 font-bold">{Math.max(0, 20 - requestCount)} طلب</span>
-                          <span>الطلبات المتبقية اليوم:</span>
-                        </div>
-                      </div>
-
-                      <div className="space-y-1 text-[10px] text-gray-400 mt-2 font-mono">
-                        <div className="flex justify-between items-center bg-white/[0.01] px-2.5 py-1.5 rounded">
-                          <span className="text-yellow-400 font-bold">20 طلب يومياً (مشترك للبروجيكت)</span>
-                          <span>سعة الباقة الكاملة:</span>
-                        </div>
-                        <div className="flex justify-between items-center bg-white/[0.01] px-2.5 py-1.5 rounded">
-                          <span className="text-amber-400 font-bold">الساعة 3:00 فجراً بتوقيت مصر</span>
-                          <span>موعد تجديد الباقة القادم:</span>
-                        </div>
-                        <div className="flex justify-between items-center bg-white/[0.01] px-2.5 py-1.5 rounded">
-                          <span className="text-indigo-300">يومياً 24:00 بالتوقيت العالمي UTC</span>
-                          <span>دورة تصفير العداد:</span>
-                        </div>
-                      </div>
-
-                      <div className="pt-2">
-                        <span className="text-[10px] text-gray-400 block mb-1">الوقت المتبقي بدقة لتصفير الباقة وتجديدها:</span>
-                        <div className="flex items-center justify-center gap-2 bg-black/50 border border-white/10 px-3 py-2 rounded-xl text-center font-mono shadow-inner">
-                          <div className="text-yellow-400 text-sm font-bold flex items-center gap-1.5" dir="ltr">
-                            <span className="text-amber-400 font-bold">{timeLeft.hours.toString().padStart(2, '0')}</span>
-                            <span className="text-gray-500 text-[10px]">H</span>
-                            <span className="text-gray-600 font-medium">:</span>
-                            <span className="text-amber-400 font-bold">{timeLeft.minutes.toString().padStart(2, '0')}</span>
-                            <span className="text-gray-500 text-[10px]">M</span>
-                            <span className="text-gray-600 font-medium">:</span>
-                            <span className="text-amber-400 font-bold">{timeLeft.seconds.toString().padStart(2, '0')}</span>
-                            <span className="text-gray-500 text-[10px]">S</span>
-                          </div>
-                          <Clock className="w-4 h-4 text-amber-400 shrink-0" />
-                        </div>
-                      </div>
+                      <p className="text-[11px] text-gray-400 leading-relaxed bg-white/[0.02] border border-white/5 p-3 rounded-xl">
+                        التطبيق يتحقق من المدخلات، يحد عدد الطلبات، ولا يعرض مفتاح Gemini للمتصفح. عدد الطلبات المتبقية وموعد تجدد الحصة يختلفان حسب خطة مشروعك، لذلك لا يتم عرض عداد تقديري مضلل.
+                      </p>
                     </div>
 
                     <div className="text-[10px] text-yellow-300/90 bg-yellow-400/5 p-2 rounded-lg border border-yellow-400/10 leading-relaxed font-semibold">
-                      💡 لتجنب الوقف عند الـ 429 وتفعيل التوليد اللانهائي؛ فعّل مفتاحك الخاص ⚙️ بالأعلى.
+                      عند ظهور خطأ 429 انتظر قليلًا أو راجع حدود وفوترة مشروع Gemini API.
                     </div>
                   </div>
 

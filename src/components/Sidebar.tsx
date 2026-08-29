@@ -1,6 +1,6 @@
 import React from "react";
 import { SavedPrompt } from "../types";
-import { Sparkles, History, Trash2, ShieldAlert } from "lucide-react";
+import { Sparkles, History, Trash2 } from "lucide-react";
 
 interface SidebarProps {
   history: SavedPrompt[];

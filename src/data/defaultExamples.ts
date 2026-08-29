@@ -4,13 +4,16 @@ export const DEFAULT_LEARNED_EXAMPLES: LearnedExample[] = [
   {
     id: 'default-ex-1',
     title: 'تصميم دعوة عقد قران فاخرة بأسلوب التذهيب واللؤلؤ',
-    request: 'عايز دعوة عقد قران باسم محمد وسلمى يوضع في برواز فخم مع آية قرآنية كريمة وتاريخ المناسبة 27 مايو 2026',
+    request: 'عايز دعوة عقد قران باسم [اسم الزوج] و[اسم الزوجة] داخل برواز فخم مع آية قرآنية ومكان واضح لـ[تاريخ المناسبة]',
     winningPrompt: `A continuous, highly detailed English visual design specification for an luxury wedding ceremony contract and invitation poster. 
 Subject & Frame: Centered frontal poster card enclosed within a thick, intricate royal border inspired by classical Persian and Turkish rug tapestries, dominated by deep velvet crimson red and glistening metallic gold foil arabesques. Along the inner margin of the golden frame sits a continuous line of photorealistic, smooth dimensional White Pearl beads.
-Typography & Calligraphy: At the top center, classic gold Thuluth Arabic calligraphy reads the Quranic verse: "ومن آياته أن خلق لكم من أنفسكم أزواجاً لتسكنوا إليها وجعل بينكم مودة ورحمة". The main title "عقد قران" is centered in majestic gold lettering. Below, the couple's names "محمد & سلمى" are rendered in thick 3D raised black acrylic letters with subtle realistic cast drop shadows standing off the thick ivory textured cardstock.
-Content & Text Lines: The text includes explicit Arabic lines inside double quotes: "الزوج: محمد", "الزوجة: سلمى", "التاريخ: 27 مايو 2026", and the blessing "جعله الله عقداً متيناً لا يخيب وعمراً هانئاً تمتد فيه المسرات".
+Typography & Calligraphy: At the top center, classic gold Thuluth Arabic calligraphy reads the Quranic verse: "ومن آياته أن خلق لكم من أنفسكم أزواجاً لتسكنوا إليها وجعل بينكم مودة ورحمة". The main title "عقد قران" is centered in majestic gold lettering. Below, the placeholders "[اسم الزوج] & [اسم الزوجة]" are rendered in thick 3D raised black acrylic letters with subtle realistic cast drop shadows standing off the thick ivory textured cardstock.
+Content & Text Lines: The text includes explicit Arabic placeholders inside double quotes: "الزوج: [اسم الزوج]", "الزوجة: [اسم الزوجة]", "التاريخ: [تاريخ المناسبة]", and a short customizable blessing.
 Lighting & Finish: Soft catalog studio lighting with delicate, natural dimensional shadows. Absolute masterpiece 8K resolution.`,
     notes: 'التأكيد دائماً على التفاصيل الثلاثية الأبعاد، خط الثلث العربي الذهبي، وأسماء العروسين بالحروف الأكريليك الساطعة.',
+    tags: ['invitation', 'social'],
+    useCount: 1,
+    successCount: 1,
     isActive: true,
     createdAt: new Date().toISOString()
   },
@@ -23,6 +26,9 @@ Composition: Front facing hero shot placed on a sleek wet black obsidian podium.
 Lighting: Volumetric dual lighting setup with warm amber rim light from the left and deep sapphire blue fill light from the right. A soft glowing spotlight illuminates the golden embossed brand emblem on the front label.
 Atmosphere: Subtle mist floating in the dark moody background, high visual fidelity, 8K, macro camera lens with shallow depth of field focusing sharply on the perfume bottle nozzle and glass texture.`,
     notes: 'التركيز على إضاءة الحواف (Rim Lighting)، وانعكاسات المشروبات أو الزجاج والملمس القريب.',
+    tags: ['product'],
+    useCount: 1,
+    successCount: 1,
     isActive: true,
     createdAt: new Date().toISOString()
   }
