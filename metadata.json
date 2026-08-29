@@ -1,0 +1,6 @@
+{
+  "name": "Gemini Image Prompt Maker",
+  "description": "منصة احترافية لتوليد وتحسين ملقنات (Prompts) صور نماذج Gemini وسلسلة Nano Banana بدقة عالية مع معالج بصري متقدم ومحلل أنماط.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
