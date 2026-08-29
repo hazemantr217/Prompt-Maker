@@ -49,11 +49,75 @@ interface GenerateVisualResponse {
   model: string;
 }
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  const payload = await response.json().catch(() => ({ error: 'استجابة غير صالحة من الخادم.' })) as { error?: string } & T;
-  if (!response.ok) throw new Error(payload.error || `فشل الطلب (${response.status}).`);
+export interface GeminiAuthStatus {
+  mode: 'managed' | 'user-required';
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly code?: string,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+const GEMINI_KEY_SESSION_STORAGE = 'prompt-maker:gemini-api-key';
+let userGeminiApiKey: string | null = null;
+
+function readSessionApiKey(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage.getItem(GEMINI_KEY_SESSION_STORAGE)?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function hasUserGeminiApiKey(): boolean {
+  userGeminiApiKey ??= readSessionApiKey();
+  return Boolean(userGeminiApiKey);
+}
+
+export function setUserGeminiApiKey(apiKey: string): void {
+  const normalized = apiKey.trim();
+  userGeminiApiKey = normalized || null;
+  if (typeof window === 'undefined') return;
+  try {
+    if (normalized) window.sessionStorage.setItem(GEMINI_KEY_SESSION_STORAGE, normalized);
+    else window.sessionStorage.removeItem(GEMINI_KEY_SESSION_STORAGE);
+  } catch {
+    // In-memory access still works when session storage is unavailable.
+  }
+}
+
+export function clearUserGeminiApiKey(): void {
+  setUserGeminiApiKey('');
+}
+
+export function isGeminiApiKeyError(error: unknown): boolean {
+  return error instanceof ApiError && ['AI_KEY_REQUIRED', 'AI_KEY_INVALID', 'AI_PERMISSION'].includes(error.code || '');
+}
+
+async function requestJson<T>(url: string, init?: RequestInit, includeGeminiKey = true): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (includeGeminiKey) {
+    userGeminiApiKey ??= readSessionApiKey();
+    if (userGeminiApiKey) headers.set('X-Gemini-API-Key', userGeminiApiKey);
+  }
+
+  const response = await fetch(url, { ...init, headers });
+  const payload = await response.json().catch(() => ({ error: 'استجابة غير صالحة من الخادم.' })) as { error?: string; code?: string } & T;
+  if (!response.ok) {
+    throw new ApiError(payload.error || `فشل الطلب (${response.status}).`, response.status, payload.code);
+  }
   return payload;
+}
+
+export function getGeminiAuthStatus(): Promise<GeminiAuthStatus> {
+  return requestJson<GeminiAuthStatus>('/api/gemini-auth', undefined, false);
 }
 
 export function optimizePrompt(request: OptimizePromptRequest, signal?: AbortSignal): Promise<OptimizePromptResponse> {

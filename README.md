@@ -26,13 +26,23 @@ The learning system is adaptive few-shot memory, not model fine-tuning. It ranks
 ## Local setup
 
 1. Install dependencies: `npm install`
-2. Copy `.env.example` to `.env` and set `GEMINI_API_KEY`.
+2. Copy `.env.example` to `.env`. Set `GEMINI_API_KEY` for a server-managed key, or leave it empty to test the in-app user-key flow.
 3. Start development: `npm run dev`
 4. Run the full quality gate: `npm run check`
 
+## Gemini API key behavior
+
+The app detects credentials by capability rather than by hostname:
+
+- In Google AI Studio, `GEMINI_API_KEY` is injected automatically as a server-side secret. The app uses it without asking the user for a key.
+- On any other host with `GEMINI_API_KEY` configured, the server-managed key is used in the same way.
+- On a host without `GEMINI_API_KEY`, the UI asks each user for their own key. It is retained only in browser session storage, sent in the `X-Gemini-API-Key` header for same-origin API calls, and never written to the repository or server storage.
+
+The request-size and rate-limit defaults are constants in `server/app.ts`. They are intentionally not environment variables, so AI Studio does not pause preview and ask users to provide non-secret configuration values.
+
 ## Security and reliability
 
-- API keys stay server-side.
+- Managed API keys stay server-side. User-provided keys are session-only and require HTTPS outside local development.
 - Zod validates and bounds all API input.
 - Image count, type, and encoded size are limited.
 - API rate limiting and production security headers are enabled.

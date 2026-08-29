@@ -2,8 +2,19 @@ import React, { useState, useEffect, useRef } from "react";
 import { SavedPrompt, LearnedExample } from "./types";
 import { DEFAULT_LEARNED_EXAMPLES } from "./data/defaultExamples";
 import { MachineLearningModal } from "./components/MachineLearningModal";
+import { ApiKeyModal } from "./components/ApiKeyModal";
 import Sidebar from "./components/Sidebar";
-import { generateVisual, getDailyAdvice, optimizePrompt, type PromptVariation } from "./services/api";
+import {
+  clearUserGeminiApiKey,
+  generateVisual,
+  getDailyAdvice,
+  getGeminiAuthStatus,
+  hasUserGeminiApiKey,
+  isGeminiApiKeyError,
+  optimizePrompt,
+  setUserGeminiApiKey,
+  type PromptVariation,
+} from "./services/api";
 import { loadLearnedExamples, loadPromptHistory, saveLearnedExamples, savePromptHistory } from "./lib/storage";
 import { MAX_REFERENCE_IMAGES, prepareImageFile } from "./lib/images";
 import { markExamplesUsed, rankLearnedExamples, reinforceLearnedExample } from "../shared/learning";
@@ -38,7 +49,8 @@ import {
   Edit3,
   ThumbsUp,
   Heart,
-  Save
+  Save,
+  KeyRound
 } from "lucide-react";
 
 interface DailyAdvice {
@@ -49,6 +61,8 @@ interface DailyAdvice {
   suggestedEnglishPrompt: string;
   suggestedModel: string;
 }
+
+type GeminiAuthMode = 'checking' | 'managed' | 'user-required' | 'unavailable';
 
 export default function App() {
   // State Initialization from LocalStorage safely
@@ -83,6 +97,9 @@ export default function App() {
   const [copyToast, setCopyToast] = useState<string | null>(null);
   const [isTempChat, setIsTempChat] = useState(false);
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+  const [geminiAuthMode, setGeminiAuthMode] = useState<GeminiAuthMode>('checking');
+  const [hasSessionApiKey, setHasSessionApiKey] = useState(hasUserGeminiApiKey);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
 
   // Multi-Prompt variations states
   const [isMultiPromptActive, setIsMultiPromptActive] = useState(false);
@@ -111,6 +128,22 @@ export default function App() {
 
   useEffect(() => () => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    getGeminiAuthStatus()
+      .then(({ mode }) => {
+        if (!active) return;
+        setGeminiAuthMode(mode);
+        if (mode === 'user-required' && !hasUserGeminiApiKey()) setShowApiKeyModal(true);
+      })
+      .catch(() => {
+        if (active) setGeminiAuthMode('unavailable');
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -210,21 +243,29 @@ export default function App() {
   const [dailyAdvice, setDailyAdvice] = useState<DailyAdvice | null>(null);
   const [adviceLoading, setAdviceLoading] = useState(false);
 
-  // Daily Advice fetch guided by Egypt timezone
+  // Daily Advice fetch guided by Egypt timezone and available Gemini credentials.
   useEffect(() => {
+    if (geminiAuthMode === 'checking') return;
+
+    const fallback: DailyAdvice = {
+      date: new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" }),
+      tip: "استخدم Nano Banana 2 لمعظم المهام، وPro فقط للتخطيطات المعقدة والكتابة الدقيقة داخل الصورة.",
+      ideaTitle: "لقطة منتج بإضاءة محايدة نظيفة",
+      ideaDescription: "تكوين تجاري بسيط يحافظ على اللون الحقيقي للمنتج وملمسه.",
+      suggestedEnglishPrompt: "A clean commercial product hero shot with neutral white-balanced studio lighting, accurate material texture, controlled reflections, and a distraction-free background.",
+      suggestedModel: "Nano Banana 2"
+    };
+
+    if (geminiAuthMode === 'user-required' && !hasSessionApiKey) {
+      setDailyAdvice(fallback);
+      return;
+    }
+
     const fetchFreshAdvice = async () => {
       setAdviceLoading(true);
       try {
         setDailyAdvice(await getDailyAdvice<DailyAdvice>());
       } catch {
-        const fallback: DailyAdvice = {
-          date: new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" }),
-          tip: "استخدم Nano Banana 2 لمعظم المهام، وPro فقط للتخطيطات المعقدة والكتابة الدقيقة داخل الصورة.",
-          ideaTitle: "لقطة منتج بإضاءة محايدة نظيفة",
-          ideaDescription: "تكوين تجاري بسيط يحافظ على اللون الحقيقي للمنتج وملمسه.",
-          suggestedEnglishPrompt: "A clean commercial product hero shot with neutral white-balanced studio lighting, accurate material texture, controlled reflections, and a distraction-free background.",
-          suggestedModel: "Nano Banana 2"
-        };
         setDailyAdvice(fallback);
       } finally {
         setAdviceLoading(false);
@@ -232,7 +273,7 @@ export default function App() {
     };
 
     fetchFreshAdvice();
-  }, []);
+  }, [geminiAuthMode, hasSessionApiKey]);
 
   useEffect(() => {
     savePromptHistory(history);
@@ -262,6 +303,43 @@ export default function App() {
     toastTimerRef.current = setTimeout(() => {
       setCopyToast(null);
     }, 2500);
+  };
+
+  const ensureGeminiAccess = (): boolean => {
+    if (geminiAuthMode === 'checking') {
+      triggerToast('جاري التحقق من اتصال Gemini...');
+      return false;
+    }
+    if (geminiAuthMode === 'user-required' && !hasSessionApiKey) {
+      setShowApiKeyModal(true);
+      triggerToast('أدخل مفتاح Gemini API أولًا.');
+      return false;
+    }
+    return true;
+  };
+
+  const handleGeminiRequestError = (error: unknown, prefix: string) => {
+    if (geminiAuthMode === 'user-required' && isGeminiApiKeyError(error)) {
+      clearUserGeminiApiKey();
+      setHasSessionApiKey(false);
+      setShowApiKeyModal(true);
+      triggerToast('المفتاح غير صالح أو لا يملك الصلاحية المطلوبة. أدخل مفتاحًا آخر.');
+      return;
+    }
+    triggerToast(`${prefix}: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`);
+  };
+
+  const handleSaveApiKey = (apiKey: string) => {
+    setUserGeminiApiKey(apiKey);
+    setHasSessionApiKey(true);
+    setShowApiKeyModal(false);
+    triggerToast('تم ربط مفتاح Gemini لهذه الجلسة بنجاح.');
+  };
+
+  const handleClearApiKey = () => {
+    clearUserGeminiApiKey();
+    setHasSessionApiKey(false);
+    triggerToast('تم حذف مفتاح Gemini من الجلسة الحالية.');
   };
 
   // Create a brand new workspace sequence
@@ -406,6 +484,8 @@ export default function App() {
       return;
     }
 
+    if (!ensureGeminiAccess()) return;
+
     setIsLoading(true);
 
     try {
@@ -472,7 +552,7 @@ export default function App() {
         triggerToast("تم تحليل الصورة وتحسين البرومبت برعاية جيميناي بنجاح!");
       }
     } catch (error) {
-      triggerToast(`عطل: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`);
+      handleGeminiRequestError(error, 'عطل');
     } finally {
       setIsLoading(false);
     }
@@ -483,6 +563,7 @@ export default function App() {
     if (expandingIndices.includes(index)) return;
     const targetVariant = currentVariations[index];
     if (!targetVariant) return;
+    if (!ensureGeminiAccess()) return;
 
     setExpandingIndices(prev => [...prev, index]);
     try {
@@ -519,7 +600,7 @@ export default function App() {
         }
       }
     } catch (error) {
-      triggerToast(`فشل توسيع الخيار ${index + 1}: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`);
+      handleGeminiRequestError(error, `فشل توسيع الخيار ${index + 1}`);
     } finally {
       setExpandingIndices(prev => prev.filter(item => item !== index));
     }
@@ -545,6 +626,8 @@ export default function App() {
       return;
     }
 
+    if (!ensureGeminiAccess()) return;
+
     setImageLoading(true);
 
     try {
@@ -569,7 +652,7 @@ export default function App() {
         triggerToast("تم إنشاء الصورة الإلهامية للبرومبت بنجاح!");
       }
     } catch (error) {
-      triggerToast("فشل توليد التكوين البصري: " + (error instanceof Error ? error.message : 'خطأ غير معروف'));
+      handleGeminiRequestError(error, 'فشل توليد التكوين البصري');
     } finally {
       setImageLoading(false);
     }
@@ -590,6 +673,13 @@ export default function App() {
 
   return (
     <div dir="rtl" className="h-screen w-full bg-[#050505] text-[#e5e7eb] font-sans flex overflow-hidden relative selection:bg-yellow-400 selection:text-black">
+      <ApiKeyModal
+        isOpen={showApiKeyModal && geminiAuthMode === 'user-required'}
+        hasExistingKey={hasSessionApiKey}
+        onSave={handleSaveApiKey}
+        onClear={handleClearApiKey}
+        onClose={() => setShowApiKeyModal(false)}
+      />
       
       {/* Absolute Toast Display */}
       {copyToast && (
@@ -715,6 +805,35 @@ export default function App() {
                 <span>⏱️ شات مؤقت</span>
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => {
+                if (geminiAuthMode === 'user-required') setShowApiKeyModal(true);
+                else if (geminiAuthMode === 'managed') triggerToast('AI Studio يدير مفتاح Gemini تلقائيًا وبأمان.');
+              }}
+              className={`text-[10px] border px-2.5 py-1 rounded-full font-bold flex items-center gap-1.5 transition-colors ${
+                geminiAuthMode === 'managed'
+                  ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20'
+                  : geminiAuthMode === 'user-required' && hasSessionApiKey
+                    ? 'text-sky-300 bg-sky-500/10 border-sky-500/20 cursor-pointer'
+                    : geminiAuthMode === 'user-required'
+                      ? 'text-yellow-300 bg-yellow-500/10 border-yellow-500/20 cursor-pointer animate-pulse'
+                      : 'text-gray-400 bg-white/5 border-white/10'
+              }`}
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              <span>
+                {geminiAuthMode === 'managed'
+                  ? 'مفتاح AI Studio متصل'
+                  : geminiAuthMode === 'user-required' && hasSessionApiKey
+                    ? 'مفتاحك متصل'
+                    : geminiAuthMode === 'user-required'
+                      ? 'أدخل مفتاح Gemini'
+                      : geminiAuthMode === 'checking'
+                        ? 'فحص اتصال Gemini'
+                        : 'تعذر فحص اتصال Gemini'}
+              </span>
+            </button>
             <span className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-full font-bold flex items-center gap-1 font-mono">
               <Clock className="w-3.5 h-3.5 text-amber-400 animate-spin" style={{ animationDuration: "10s" }} />
               <span>حدود الاستخدام الفعلية تُدار من مشروع Gemini API</span>
