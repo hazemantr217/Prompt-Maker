@@ -809,7 +809,7 @@ export default function App() {
               type="button"
               onClick={() => {
                 if (geminiAuthMode === 'user-required') setShowApiKeyModal(true);
-                else if (geminiAuthMode === 'managed') triggerToast('AI Studio يدير مفتاح Gemini تلقائيًا وبأمان.');
+                else if (geminiAuthMode === 'managed') triggerToast('بيئة التشغيل تدير مفتاح Gemini تلقائيًا وبأمان.');
               }}
               className={`text-[10px] border px-2.5 py-1 rounded-full font-bold flex items-center gap-1.5 transition-colors ${
                 geminiAuthMode === 'managed'
@@ -824,7 +824,7 @@ export default function App() {
               <KeyRound className="w-3.5 h-3.5" />
               <span>
                 {geminiAuthMode === 'managed'
-                  ? 'مفتاح AI Studio متصل'
+                  ? 'مفتاح المنصة متصل تلقائيًا'
                   : geminiAuthMode === 'user-required' && hasSessionApiKey
                     ? 'مفتاحك متصل'
                     : geminiAuthMode === 'user-required'

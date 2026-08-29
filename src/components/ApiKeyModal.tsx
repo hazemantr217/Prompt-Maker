@@ -46,7 +46,7 @@ export function ApiKeyModal({
             <div>
               <h2 className="text-base font-bold text-white">ربط مفتاح Gemini API</h2>
               <p className="mt-1 text-xs text-gray-400">
-                التشغيل الحالي خارج بيئة AI Studio ولا يوجد مفتاح مُدار على الخادم.
+                لم نجد مفتاحًا مُدارًا في بيئة التشغيل الحالية، لذلك يلزم مفتاحك للمتابعة.
               </p>
             </div>
           </div>
