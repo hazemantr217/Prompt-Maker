@@ -6,18 +6,55 @@ import {
 import { AppError } from '../lib/http';
 import type { ChatModelApiId } from '../../shared/models';
 
-let client: GoogleGenAI | null = null;
+let managedClient: GoogleGenAI | null = null;
+let managedClientKey: string | null = null;
 
-function getClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-    throw new AppError(503, 'مفتاح Gemini API غير مُعد على الخادم.', 'AI_NOT_CONFIGURED');
+function normalizeKey(value: string | undefined): string | null {
+  const apiKey = value?.trim();
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') return null;
+  return apiKey;
+}
+
+export function hasManagedGeminiKey(): boolean {
+  return normalizeKey(process.env.GEMINI_API_KEY) !== null;
+}
+
+export function resolveGeminiApiKey(userApiKey?: string): { apiKey: string; managed: boolean } {
+  const serverApiKey = normalizeKey(process.env.GEMINI_API_KEY);
+  if (serverApiKey) return { apiKey: serverApiKey, managed: true };
+
+  const suppliedApiKey = normalizeKey(userApiKey);
+  if (!suppliedApiKey) {
+    throw new AppError(
+      401,
+      'أدخل مفتاح Gemini API الخاص بك للمتابعة.',
+      'AI_KEY_REQUIRED',
+    );
   }
-  client ??= new GoogleGenAI({
+
+  if (suppliedApiKey.length > 512 || /[\r\n]/.test(suppliedApiKey)) {
+    throw new AppError(400, 'صيغة مفتاح Gemini API غير صالحة.', 'AI_KEY_INVALID');
+  }
+
+  return { apiKey: suppliedApiKey, managed: false };
+}
+
+function createClient(apiKey: string): GoogleGenAI {
+  return new GoogleGenAI({
     apiKey,
     httpOptions: { headers: { 'User-Agent': 'prompt-maker/2.0' } },
   });
-  return client;
+}
+
+function getClient(userApiKey?: string): GoogleGenAI {
+  const resolved = resolveGeminiApiKey(userApiKey);
+  if (!resolved.managed) return createClient(resolved.apiKey);
+
+  if (!managedClient || managedClientKey !== resolved.apiKey) {
+    managedClient = createClient(resolved.apiKey);
+    managedClientKey = resolved.apiKey;
+  }
+  return managedClient;
 }
 
 function errorMessage(error: unknown): string {
@@ -59,6 +96,7 @@ async function retryTransient<T>(operation: () => Promise<T>, attempts = 2): Pro
 }
 
 function toPublicError(error: unknown): AppError {
+  if (error instanceof AppError) return error;
   const status = errorStatus(error);
   if (status === 429) return new AppError(429, 'تم تجاوز حصة Gemini مؤقتًا. انتظر قليلًا أو راجع حدود مشروعك.', 'AI_RATE_LIMIT');
   if (status === 401 || status === 403) return new AppError(503, 'مفتاح Gemini غير صالح أو لا يملك صلاحية استخدام هذا الموديل.', 'AI_PERMISSION');
@@ -69,6 +107,7 @@ function toPublicError(error: unknown): AppError {
 export async function generateTextWithFallback(
   requestedModel: ChatModelApiId,
   parameters: Omit<GenerateContentParameters, 'model'>,
+  userApiKey?: string,
 ): Promise<GenerateContentResponse> {
   const fallbacks: ChatModelApiId[] = ['gemini-3.7-flash', 'gemini-3.1-flash-lite'];
   const queue = Array.from(new Set<ChatModelApiId>([requestedModel, ...fallbacks]));
@@ -76,7 +115,7 @@ export async function generateTextWithFallback(
 
   for (const model of queue) {
     try {
-      return await retryTransient(() => getClient().models.generateContent({ ...parameters, model }));
+      return await retryTransient(() => getClient(userApiKey).models.generateContent({ ...parameters, model }));
     } catch (error) {
       lastError = error;
       if (!isModelUnavailable(error)) throw toPublicError(error);
@@ -85,9 +124,12 @@ export async function generateTextWithFallback(
   throw toPublicError(lastError);
 }
 
-export async function generateImage(parameters: GenerateContentParameters): Promise<GenerateContentResponse> {
+export async function generateImage(
+  parameters: GenerateContentParameters,
+  userApiKey?: string,
+): Promise<GenerateContentResponse> {
   try {
-    return await retryTransient(() => getClient().models.generateContent(parameters));
+    return await retryTransient(() => getClient(userApiKey).models.generateContent(parameters));
   } catch (error) {
     throw toPublicError(error);
   }

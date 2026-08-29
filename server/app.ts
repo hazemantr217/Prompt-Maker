@@ -4,16 +4,15 @@ import helmet from 'helmet';
 import { errorHandler, notFoundHandler } from './lib/http';
 import dailyAdviceRouter from './routes/dailyAdvice';
 import generateVisualRouter from './routes/generateVisual';
+import geminiAuthRouter from './routes/geminiAuth';
 import optimizePromptRouter from './routes/optimizePrompt';
 
-function positiveInteger(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
+const MAX_REQUEST_BODY_MB = 15;
+const API_RATE_LIMIT_PER_MINUTE = 30;
 
 export function createApp() {
   const app = express();
-  const bodyLimit = `${positiveInteger(process.env.MAX_REQUEST_BODY_MB, 15)}mb`;
+  const bodyLimit = `${MAX_REQUEST_BODY_MB}mb`;
 
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -36,12 +35,12 @@ export function createApp() {
   app.use(express.json({ limit: bodyLimit }));
   app.use('/api', rateLimit({
     windowMs: 60_000,
-    limit: positiveInteger(process.env.API_RATE_LIMIT_PER_MINUTE, 30),
+    limit: API_RATE_LIMIT_PER_MINUTE,
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     message: { error: 'طلبات كثيرة جدًا خلال دقيقة واحدة. انتظر قليلًا ثم حاول مجددًا.' },
   }));
-  app.use('/api', optimizePromptRouter, generateVisualRouter, dailyAdviceRouter);
+  app.use('/api', geminiAuthRouter, optimizePromptRouter, generateVisualRouter, dailyAdviceRouter);
   app.use('/api', notFoundHandler);
 
   return app;

@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { IMAGE_MODEL_IDS, isModelId } from '../../shared/models';
 import { AppError, asyncRoute } from '../lib/http';
+import { readUserGeminiApiKey } from '../lib/geminiAuth';
 import { generateTextWithFallback } from '../services/gemini';
 
 const router = Router();
@@ -29,7 +30,7 @@ const FALLBACK = {
   suggestedModel: 'Nano Banana 2',
 };
 
-router.get('/daily-gemini-advice', asyncRoute(async (_request, response) => {
+router.get('/daily-gemini-advice', asyncRoute(async (request, response) => {
   const date = cairoDate();
   if (cached?.cairoDate === date) {
     response.json(cached.payload);
@@ -54,7 +55,7 @@ router.get('/daily-gemini-advice', asyncRoute(async (_request, response) => {
           required: ['date', 'tip', 'ideaTitle', 'ideaDescription', 'suggestedEnglishPrompt', 'suggestedModel'],
         },
       },
-    });
+    }, readUserGeminiApiKey(request));
     if (!aiResponse.text) throw new AppError(502, 'Empty daily advice response');
     const result = adviceSchema.parse(JSON.parse(aiResponse.text));
     cached = { cairoDate: date, payload: result };

@@ -1,6 +1,7 @@
 import { Type, type Part } from '@google/genai';
 import { Router } from 'express';
 import { AppError, asyncRoute } from '../lib/http';
+import { readUserGeminiApiKey } from '../lib/geminiAuth';
 import {
   formatZodError,
   optimizePromptSchema,
@@ -126,7 +127,7 @@ The main optimizedPrompt must be usable as-is. Put usage guidance in tips and ex
       responseMimeType: 'application/json',
       responseSchema: { type: Type.OBJECT, properties, required },
     },
-  });
+  }, readUserGeminiApiKey(request));
 
   if (!aiResponse.text) throw new AppError(502, 'لم يُرجع Gemini نصًا.', 'AI_EMPTY_RESPONSE');
   const output = optimizeResponseSchema.safeParse(parseJsonObject(aiResponse.text));

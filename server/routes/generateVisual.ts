@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getImageModelApiId } from '../../shared/models';
 import { AppError, asyncRoute } from '../lib/http';
+import { readUserGeminiApiKey } from '../lib/geminiAuth';
 import { formatZodError, generateVisualSchema } from '../lib/validation';
 import { generateImage } from '../services/gemini';
 
@@ -17,7 +18,7 @@ router.post('/generate-visual', asyncRoute(async (request, response) => {
     model,
     contents: { parts: [{ text: input.prompt }] },
     config: { imageConfig: { aspectRatio: input.aspectRatio, imageSize } },
-  });
+  }, readUserGeminiApiKey(request));
 
   const imagePart = aiResponse.candidates?.[0]?.content?.parts?.find((part) => part.inlineData?.data);
   if (!imagePart?.inlineData?.data) {
