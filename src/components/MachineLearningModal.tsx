@@ -9,15 +9,13 @@ import {
   Download, 
   Sparkles, 
   Image as ImageIcon, 
-  FileText, 
   RotateCcw,
   BookOpen,
   CheckCircle2,
-  AlertCircle,
-  Copy,
   Layers
 } from 'lucide-react';
 import { LearnedExample } from '../types';
+import { MAX_REFERENCE_IMAGES, prepareImageFile } from '../lib/images';
 
 interface MachineLearningModalProps {
   isOpen: boolean;
@@ -79,16 +77,7 @@ export const MachineLearningModal: React.FC<MachineLearningModalProps> = ({
         const item = items[i];
         if (item.type.indexOf('image') !== -1) {
           const file = item.getAsFile();
-          if (file) {
-            const reader = new FileReader();
-            reader.onload = (event) => {
-              if (event.target?.result) {
-                setImages((prev) => [...prev, event.target!.result as string]);
-                showToast('تم لصق الصورة من الذاكرة (Ctrl + V) بنجاح! 📋✨');
-              }
-            };
-            reader.readAsDataURL(file);
-          }
+          if (file) void addImageFiles([file]);
         }
       }
     };
@@ -104,20 +93,27 @@ export const MachineLearningModal: React.FC<MachineLearningModalProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  const addImageFiles = async (files: File[]) => {
+    const available = Math.max(0, MAX_REFERENCE_IMAGES - images.length);
+    const selected = files.filter((file) => file.type.startsWith('image/')).slice(0, available);
+    if (selected.length === 0) {
+      showToast(`الحد الأقصى ${MAX_REFERENCE_IMAGES} صور لكل مثال.`);
+      return;
+    }
+
+    const prepared = await Promise.allSettled(selected.map((file) => prepareImageFile(file, 768, 0.75)));
+    const valid = prepared
+      .filter((result): result is PromiseFulfilledResult<{ base64: string; mimeType: 'image/jpeg' }> => result.status === 'fulfilled')
+      .map((result) => result.value.base64);
+    setImages((previous) => [...previous, ...valid].slice(0, MAX_REFERENCE_IMAGES));
+    showToast(valid.length > 0 ? `تم تجهيز وإضافة ${valid.length} صورة.` : 'تعذر تجهيز الصور المرفقة.');
+  };
+
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
 
-    Array.from(files).forEach((file: File) => {
-      if (!file.type.startsWith('image/')) return;
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setImages((prev) => [...prev, event.target!.result as string]);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
+    void addImageFiles(Array.from(files));
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -140,23 +136,7 @@ export const MachineLearningModal: React.FC<MachineLearningModalProps> = ({
     const files = e.dataTransfer.files;
     if (!files || files.length === 0) return;
 
-    let addedCount = 0;
-    Array.from(files).forEach((file: File) => {
-      if (file.type.startsWith('image/')) {
-        addedCount++;
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          if (event.target?.result) {
-            setImages((prev) => [...prev, event.target!.result as string]);
-          }
-        };
-        reader.readAsDataURL(file);
-      }
-    });
-
-    if (addedCount > 0) {
-      showToast(`تم إرفاق ${addedCount} صور بالسحب والإفلات! 🖼️`);
-    }
+    void addImageFiles(Array.from(files));
   };
 
   const handleFetchSessionImages = () => {
@@ -236,14 +216,33 @@ export const MachineLearningModal: React.FC<MachineLearningModalProps> = ({
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
-        const parsed = JSON.parse(event.target?.result as string);
+        const parsed: unknown = JSON.parse(String(event.target?.result));
         if (Array.isArray(parsed)) {
-          onImportExamples(parsed);
-          showToast(`تم استيراد ${parsed.length} أمثلة تدريبية بنجاح!`);
+          const imported = parsed.flatMap((value, index): LearnedExample[] => {
+            if (!value || typeof value !== 'object') return [];
+            const candidate = value as Partial<LearnedExample>;
+            if (typeof candidate.request !== 'string' || typeof candidate.winningPrompt !== 'string') return [];
+            return [{
+              id: typeof candidate.id === 'string' ? candidate.id : `imported-${Date.now()}-${index}`,
+              title: typeof candidate.title === 'string' ? candidate.title.slice(0, 160) : candidate.request.slice(0, 80),
+              request: candidate.request.slice(0, 4_000),
+              winningPrompt: candidate.winningPrompt.slice(0, 20_000),
+              notes: typeof candidate.notes === 'string' ? candidate.notes.slice(0, 2_000) : undefined,
+              isActive: candidate.isActive !== false,
+              createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
+              tags: Array.isArray(candidate.tags) ? candidate.tags.filter((tag): tag is string => typeof tag === 'string').slice(0, 12) : undefined,
+              useCount: typeof candidate.useCount === 'number' ? Math.max(0, Math.floor(candidate.useCount)) : 0,
+              successCount: typeof candidate.successCount === 'number' ? Math.max(0, Math.floor(candidate.successCount)) : 0,
+              lastUsedAt: typeof candidate.lastUsedAt === 'string' ? candidate.lastUsedAt : undefined,
+            }];
+          }).slice(0, 150);
+          if (imported.length === 0) throw new Error('No valid examples');
+          onImportExamples(imported);
+          showToast(`تم استيراد ${imported.length} أمثلة تدريبية صالحة!`);
         } else {
-          showToast('ملف غير صائم: يجب أن يحتوي الملف على مصفوفة JSON من الأمثلة.');
+          showToast('ملف غير صالح: يجب أن يحتوي على مصفوفة JSON من الأمثلة.');
         }
-      } catch (err) {
+      } catch {
         showToast('خطأ في قراءة ملف JSON.');
       }
     };
@@ -264,7 +263,7 @@ export const MachineLearningModal: React.FC<MachineLearningModalProps> = ({
             </div>
             <div>
               <h2 className="text-xl font-bold flex items-center gap-2">
-                نظام التعلم الآلي والتدريب بالأمثلة
+                ذاكرة التعلم التكيفية بالأمثلة
                 <span className="text-xs px-2.5 py-1 bg-purple-500/20 border border-purple-500/30 text-purple-300 rounded-full font-mono">
                   {activeCount} أمثلة مفعلة
                 </span>
@@ -354,7 +353,7 @@ export const MachineLearningModal: React.FC<MachineLearningModalProps> = ({
                   <Brain className="w-12 h-12 text-gray-600 mx-auto mb-3" />
                   <p className="text-sm font-semibold text-gray-300">لا توجد أمثلة تدريبية حتى الآن</p>
                   <p className="text-xs text-gray-500 mt-1 max-w-md mx-auto">
-                    قم بإضافة أول مثال تدريبي يحتوي على صورتك وطلبك والنتيجة التي أثبتت جودتها ليقوم الموديل بالتعلم منها مباشرة.
+                    أضف طلبك والبرومبت الذي أثبت جودته. النظام سيقيس الصلة والجودة ويختار الأمثلة الأقرب تلقائيًا لكل طلب جديد.
                   </p>
                   <button
                     onClick={() => setActiveTab('add')}
@@ -472,7 +471,7 @@ export const MachineLearningModal: React.FC<MachineLearningModalProps> = ({
                 <label className="block text-xs font-bold text-gray-300 mb-1">طلبك أو فكرة المستخدم (Input Request) *</label>
                 <textarea 
                   rows={3}
-                  placeholder="اكتب الطلب أو النص الأصلي الذي كنت قد أدخلته (مثال: 'عايز كارت عقد قران باسم محمد وسلمى يوضع في برواز فخم مع آية قرآنية')..."
+                  placeholder="اكتب الطلب الأصلي (مثال: عايز كارت عقد قران باسم [اسم الزوج] و[اسم الزوجة] داخل برواز فخم)..."
                   value={request}
                   onChange={(e) => setRequest(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-xs text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
@@ -486,7 +485,7 @@ export const MachineLearningModal: React.FC<MachineLearningModalProps> = ({
                 </label>
                 <textarea 
                   rows={4}
-                  placeholder="الصق هنا نص البرومبت النهائي الممتاز الذي أعطاك صورة رائعة، ليتعلم منه نموذج جيميناي صياغة البرومبتات المستقبلية بنفس الجودة والتفاصيل..."
+                  placeholder="الصق البرومبت النهائي الممتاز. سيُستخدم كمرجع أسلوبي عندما يكون قريبًا من الطلب الجديد..."
                   value={winningPrompt}
                   onChange={(e) => setWinningPrompt(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-black/40 border border-purple-500/30 rounded-xl text-xs text-purple-100 placeholder-gray-500 focus:outline-none focus:border-purple-500 font-mono text-left dir-ltr"
@@ -615,7 +614,7 @@ export const MachineLearningModal: React.FC<MachineLearningModalProps> = ({
         <div className="p-4 bg-white/[0.01] border-t border-white/10 text-center text-[11px] text-gray-500 flex items-center justify-between px-6">
           <div className="flex items-center gap-2">
             <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-            <span>يعمل بنظام التعلم الآلي القائم على التقييم بالأمثلة (Few-Shot Prompt Learning)</span>
+            <span>ذاكرة Few-Shot تكيفية؛ تختار الأمثلة بالصلة والجودة ولا تعدّل أوزان موديل Gemini نفسه.</span>
           </div>
           <span>الموديل النشط: Gemini 3.7 Flash</span>
         </div>
